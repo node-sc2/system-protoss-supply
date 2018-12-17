@@ -1,6 +1,6 @@
 {
   "name": "@node-sc2/system-protoss-supply",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A system compatible with @node-sc2/core, to provide reasonable defaults for building pylons throughout a game",
   "main": "system.js",
   "scripts": {
