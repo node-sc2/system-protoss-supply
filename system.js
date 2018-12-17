@@ -17,13 +17,9 @@ function calculateSupplyGap(gameLoop, supply, bases) {
     return Math.floor(gap);
 }
 
- /** @type {AgentSystem} */
-const SupplySystem = {
+module.exports = createSystem({
     name: 'SupplySystem',
     type: 'agent',
-    setup() {
-        this.setState({ supplyUnits: 0 });
-    },
     /** @param {World} world */
     findSupplyPositions({ agent, resources }) {
         const { units, map, debug } = resources.get();
@@ -33,7 +29,7 @@ const SupplySystem = {
         const myPylons = units.getById(SupplyUnitRace[agent.race]);
 
         // first pylon being placed
-        if (this.state.supplyUnits === 0) {
+        if (myPylons.length <= 0) {
             const mainMineralLine = main.areas.mineralLine;
             const geysers = main.cluster.vespeneGeysers;
 
@@ -52,29 +48,33 @@ const SupplySystem = {
             return locations;
         }
 
-        if (this.state.supplyUnits === 1) {
+        if (myPylons.length <= 1) {
             // front of natural pylon for great justice
-            const fON = frontOfNatural(map.getExpansions());
+            const fON = frontOfNatural(map);
+            const fonHull = fON.filter(p => natural.areas.hull.some(nh => distance(p, nh) <= 0.5));
 
-            // only get the points close enough for a super pylon
+            const fonHullDistances = fonHull.map(fh => ({ ...fh, distance: Math.round(distance(fh, natural.townhallPosition)) })).sort((a, b) => b.distance - a.distance);
+            const ds = fonHullDistances.map(d => d.distance).slice(0, 4);
+            const fonHullFarthest = fonHullDistances.filter(fh => ds.includes(fh.distance));
+            const fonAvg = avgPoints(fonHullFarthest);
+
+            console.log(fonHullDistances.length, fonHullFarthest.length, fonAvg);
+
             const placements = fON.filter((point) => {
-                const thD = distance(point, natural.townhallPosition);
-                
+                const fAP = distance(point, fonAvg);
                 return (
-                    // within super pylon distance, and friends, not lovers
-                    (thD < 6.5) && (thD > 4.5) &&
-                    // not in mineral line
-                    natural.areas.mineralLine.every(p => !areEqual(p, point))
+                    // not blocking nat
+                    (distance(point, natural.townhallPosition) > 4) &&
+                    // covering as much fon gate area as possible
+                    (fonHullFarthest.some(fhf => {
+                        const d = distance(point, fhf);
+                        return ((d < 6) && (d > 2));
+                    }))
                 );
             });
 
-            const closestToAvg = nClosestPoint(avgPoints(placements), placements, 10);
+            const closestToAvg = nClosestPoint(avgPoints(placements), placements, 15);
 
-            // const avgFON = avgPoints(fON);
-
-            // debug.setDrawCells('frontOfNatural', closestToAvg, natural.zPosition);
-            // debug.setDrawTextWorld('frontOfNatLabel', [{ pos: avgFON, text: 'FRONT OF NATURAL', color: WHITE}]);
-            // debug.updateScreen();
             return closestToAvg;
         }
 
@@ -119,7 +119,7 @@ const SupplySystem = {
         }
     },
     async onStep({ agent, data, resources }, gameLoop) {
-        const { units, actions } = resources.get();
+        const { units, actions, map, debug } = resources.get();
 
         const supplyUnitId = SupplyUnitRace[agent.race];
         const bases = units.getBases(Alliance.SELF);
@@ -139,6 +139,7 @@ const SupplySystem = {
         const conditions = [
             supplyCap - supply < calculateSupplyGap(gameLoop, supply, bases), // need more supply gap
             agent.canAfford(supplyUnitId), // can afford to build a pylon
+            units.withCurrentOrders(buildAbilityId).length <= 0
         ];
 
         if (conditions.every(c => c)) {
@@ -155,11 +156,8 @@ const SupplySystem = {
             const foundPosition = await actions.canPlace(supplyUnitId, randomPositions);
 
             if (foundPosition) {
-                await actions.build(supplyUnitId, foundPosition);
-                this.setState({ supplyUnits: this.state.supplyUnits + 1 });
+                const res = await actions.build(supplyUnitId, foundPosition);
             }
         }
     }
-};
-
-module.exports = createSystem(SupplySystem);
+});
