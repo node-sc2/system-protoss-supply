@@ -22,7 +22,7 @@
   },
   "homepage": "https://github.com/node-sc2/system-protoss-supply#readme",
   "peerDependencies": {
-    "@node-sc2/core": ">= 0.7.1"
+    "@node-sc2/core": ">= 0.8.0"
   },
   "dependencies": {
     "debug": "^4.1.0"

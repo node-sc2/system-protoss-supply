@@ -3,7 +3,7 @@
 const debugSilly = require('debug')('sc2:silly:supplySystem');
 const { createSystem } = require('@node-sc2/core');
 const { Alliance } = require('@node-sc2/core/constants/enums');
-const { frontOfNatural } = require('@node-sc2/core/utils/map/region');
+const { frontOfGrid } = require('@node-sc2/core/utils/map/region');
 const { SupplyUnitRace } = require('@node-sc2/core/constants/race-map');
 const { distance, areEqual, avgPoints, nClosestPoint } = require('@node-sc2/core/utils/geometry/point');
 
@@ -29,7 +29,7 @@ module.exports = createSystem({
         const myPylons = units.getById(SupplyUnitRace[agent.race]);
 
         // first pylon being placed
-        if (myPylons.length <= 0) {
+        if (myPylons.length === 0) {
             const mainMineralLine = main.areas.mineralLine;
             const geysers = main.cluster.vespeneGeysers;
 
@@ -48,34 +48,29 @@ module.exports = createSystem({
             return locations;
         }
 
-        if (myPylons.length <= 1) {
+        if (myPylons.length === 1) {
             // front of natural pylon for great justice
-            const fON = frontOfNatural(map);
-            const fonHull = fON.filter(p => natural.areas.hull.some(nh => distance(p, nh) <= 0.5));
+            const naturalWall = map.getNatural().getWall();
+            let possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
+                .filter(point => naturalWall.every(wallCell => (
+                    (distance(wallCell, point) <= 6.5) &&
+                    (distance(wallCell, point) >= 3)
+                )));
 
-            const fonHullDistances = fonHull.map(fh => ({ ...fh, distance: Math.round(distance(fh, natural.townhallPosition)) })).sort((a, b) => b.distance - a.distance);
-            const ds = fonHullDistances.map(d => d.distance).slice(0, 4);
-            const fonHullFarthest = fonHullDistances.filter(fh => ds.includes(fh.distance));
-            const fonAvg = avgPoints(fonHullFarthest);
+            if (possiblePlacements.length <= 0) {
+                possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
+                    .map(point => {
+                        point.coverage = naturalWall.filter(wallCell => (
+                            (distance(wallCell, point) <= 6.5) &&
+                            (distance(wallCell, point) >= 1)
+                        )).length;
+                        return point;
+                    })
+                    .sort((a, b) => b.coverage - a.coverage)
+                    .filter((cell, i, arr) => cell.coverage === arr[0].coverage);
+            }
 
-            console.log(fonHullDistances.length, fonHullFarthest.length, fonAvg);
-
-            const placements = fON.filter((point) => {
-                const fAP = distance(point, fonAvg);
-                return (
-                    // not blocking nat
-                    (distance(point, natural.townhallPosition) > 4) &&
-                    // covering as much fon gate area as possible
-                    (fonHullFarthest.some(fhf => {
-                        const d = distance(point, fhf);
-                        return ((d < 6) && (d > 2));
-                    }))
-                );
-            });
-
-            const closestToAvg = nClosestPoint(avgPoints(placements), placements, 15);
-
-            return closestToAvg;
+            return possiblePlacements;
         }
 
         const needsSuperPylon = myExpansions.find((expansion) => {
@@ -92,7 +87,7 @@ module.exports = createSystem({
                     distance(point, baseWhichNeedsSuperPylon.pos) < 6.5 &&
                     distance(point, baseWhichNeedsSuperPylon.pos) > 3.5
                 );
-            });
+            })
         }
 
         // behind mineral line pylons, for canons and things, every base should have one if it can fit
