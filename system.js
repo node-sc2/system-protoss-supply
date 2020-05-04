@@ -17,142 +17,156 @@ function calculateSupplyGap(gameLoop, supply, bases) {
     return Math.floor(gap);
 }
 
-module.exports = createSystem({
-    name: 'SupplySystem',
-    type: 'agent',
-    /** @param {World} world */
-    findSupplyPositions({ agent, resources }) {
-        const { units, map, debug } = resources.get();
+function createSupplySystem(options) {
+    const { firstPylon } = options;
 
-        const [main, natural] = map.getExpansions();
-        const myExpansions = map.getOccupiedExpansions(Alliance.SELF);
-        const myPylons = units.getById(SupplyUnitRace[agent.race]);
+    return createSystem({
+        name: 'SupplySystem',
+        type: 'agent',
+        /** @param {World} world */
+        findSupplyPositions({ agent, resources }) {
+            const { units, map, debug } = resources.get();
 
-        // first pylon being placed
-        if (myPylons.length === 0) {
-            const mainMineralLine = main.areas.mineralLine;
-            const geysers = main.cluster.vespeneGeysers;
+            const [main, natural] = map.getExpansions();
+            const myExpansions = map.getOccupiedExpansions(Alliance.SELF);
+            const myPylons = units.getById(SupplyUnitRace[agent.race]);
 
-            const mainBase = main.getBase();
-            const locations = main.areas.areaFill.filter((point) => {
+            // first pylon being placed
+            if (myPylons.length === 0 && firstPylon === 'main') {
+                const mainMineralLine = main.areas.mineralLine;
+                const geysers = main.cluster.vespeneGeysers;
+
+                const mainBase = main.getBase();
+                const locations = main.areas.areaFill.filter((point) => {
+                    return (
+                        // with-in super pylon distance from main nexus
+                        (distance(point, mainBase.pos) <= 6.5) &&
+                        // far enough away to stay outta the mineral line
+                        (mainMineralLine.every(mlp => distance(mlp, point) > 2)) &&
+                        // far enough away from gas line
+                        (geysers.every(gp => distance(gp.pos, point) > 3))
+                    );
+                });
+
+                return locations;
+            }
+
+            if (myPylons.length === 0 && firstPylon === 'natural') {
+                // front of natural pylon for great justice
+                const naturalWall = map.getNatural().getWall();
+                let possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
+                    .filter(point => naturalWall.every(wallCell => (
+                        (distance(wallCell, point) <= 6.5) &&
+                        (distance(wallCell, point) >= 3)
+                    )));
+
+                if (possiblePlacements.length <= 0) {
+                    possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
+                        .map(point => {
+                            point.coverage = naturalWall.filter(wallCell => (
+                                (distance(wallCell, point) <= 6.5) &&
+                                (distance(wallCell, point) >= 1)
+                            )).length;
+                            return point;
+                        })
+                        .sort((a, b) => b.coverage - a.coverage)
+                        .filter((cell, i, arr) => cell.coverage === arr[0].coverage);
+                }
+
+                return possiblePlacements;
+            }
+
+            const needsSuperPylon = myExpansions.find((expansion) => {
+                const expansionBase = expansion.getBase();
+                
+                return !myPylons.some(pylon => distance(expansionBase.pos, pylon.pos) < 6.5);
+            });
+
+            if (needsSuperPylon) {
+                const baseWhichNeedsSuperPylon = needsSuperPylon.getBase();
+
+                return needsSuperPylon.areas.placementGrid.filter((point) => {
+                    return (
+                        distance(point, baseWhichNeedsSuperPylon.pos) < 6.5 &&
+                        distance(point, baseWhichNeedsSuperPylon.pos) > 3.5
+                    );
+                })
+            }
+
+            // behind mineral line pylons, for canons and things, every base should have one if it can fit
+            const needsBmlPylon = myExpansions.find((expansion) => {
                 return (
-                    // with-in super pylon distance from main nexus
-                    (distance(point, mainBase.pos) <= 6.5) &&
-                    // far enough away to stay outta the mineral line
-                    (mainMineralLine.every(mlp => distance(mlp, point) > 2)) &&
-                    // far enough away from gas line
-                    (geysers.every(gp => distance(gp.pos, point) > 3))
+                    // no existing bml pylon
+                    !myPylons.some((pylon) => {
+                        return expansion.areas.behindMineralLine.some(point => areEqual(pylon.pos, point));
+                    }) &&
+                    // label prevents getting stuck retrying where it doesn't fit
+                    !expansion.labels.has('attemptedBML')
                 );
             });
 
-            return locations;
-        }
+            if (needsBmlPylon) {
+                needsBmlPylon.labels.set('attemptedBML', true);
+                const bml =  needsBmlPylon.areas.behindMineralLine;
+                const bmlCentroid = avgPoints(bml);
 
-        if (myPylons.length === 1) {
-            // front of natural pylon for great justice
-            const naturalWall = map.getNatural().getWall();
-            let possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
-                .filter(point => naturalWall.every(wallCell => (
-                    (distance(wallCell, point) <= 6.5) &&
-                    (distance(wallCell, point) >= 3)
-                )));
-
-            if (possiblePlacements.length <= 0) {
-                possiblePlacements = frontOfGrid({ resources }, map.getNatural().areas.areaFill)
-                    .map(point => {
-                        point.coverage = naturalWall.filter(wallCell => (
-                            (distance(wallCell, point) <= 6.5) &&
-                            (distance(wallCell, point) >= 1)
-                        )).length;
-                        return point;
-                    })
-                    .sort((a, b) => b.coverage - a.coverage)
-                    .filter((cell, i, arr) => cell.coverage === arr[0].coverage);
+                return bml.filter(point => distance(point, bmlCentroid) < 5);
+            } else {
+                // otherwise just return all points in main and nat
+                return [ ...main.areas.placementGrid, ...natural.areas.placementGrid];
             }
+        },
+        async onStep({ agent, data, resources }, gameLoop) {
+            const { units, actions, map, debug } = resources.get();
 
-            return possiblePlacements;
-        }
+            const supplyUnitId = SupplyUnitRace[agent.race];
+            const bases = units.getBases(Alliance.SELF);
+            const buildAbilityId = data.getUnitTypeData(supplyUnitId).abilityId;
 
-        const needsSuperPylon = myExpansions.find((expansion) => {
-            const expansionBase = expansion.getBase();
-            
-            return !myPylons.some(pylon => distance(expansionBase.pos, pylon.pos) < 6.5);
-        });
+            const { foodUsed: supply, foodCap } = agent;
 
-        if (needsSuperPylon) {
-            const baseWhichNeedsSuperPylon = needsSuperPylon.getBase();
-
-            return needsSuperPylon.areas.placementGrid.filter((point) => {
-                return (
-                    distance(point, baseWhichNeedsSuperPylon.pos) < 6.5 &&
-                    distance(point, baseWhichNeedsSuperPylon.pos) > 3.5
-                );
-            })
-        }
-
-        // behind mineral line pylons, for canons and things, every base should have one if it can fit
-        const needsBmlPylon = myExpansions.find((expansion) => {
-            return (
-                // no existing bml pylon
-                !myPylons.some((pylon) => {
-                    return expansion.areas.behindMineralLine.some(point => areEqual(pylon.pos, point));
-                }) &&
-                // label prevents getting stuck retrying where it doesn't fit
-                !expansion.labels.has('attemptedBML')
+            // current supplyCap includes pylons currently building and existing orders given to build them
+            const supplyCap = (
+                foodCap +
+                (units.inProgress(supplyUnitId).length * 8) + 
+                (units.withCurrentOrders(buildAbilityId).length * 8)
             );
-        });
 
-        if (needsBmlPylon) {
-            needsBmlPylon.labels.set('attemptedBML', true);
-            const bml =  needsBmlPylon.areas.behindMineralLine;
-            const bmlCentroid = avgPoints(bml);
+            if (supplyCap >= 200) return;
 
-            return bml.filter(point => distance(point, bmlCentroid) < 5);
-        } else {
-            // otherwise just return all points in main and nat
-            return [ ...main.areas.placementGrid, ...natural.areas.placementGrid];
-        }
-    },
-    async onStep({ agent, data, resources }, gameLoop) {
-        const { units, actions, map, debug } = resources.get();
+            const conditions = [
+                supplyCap - supply < calculateSupplyGap(gameLoop, supply, bases), // need more supply gap
+                agent.canAfford(supplyUnitId), // can afford to build a pylon
+                units.withCurrentOrders(buildAbilityId).length <= 0
+            ];
 
-        const supplyUnitId = SupplyUnitRace[agent.race];
-        const bases = units.getBases(Alliance.SELF);
-        const buildAbilityId = data.getUnitTypeData(supplyUnitId).abilityId;
+            if (conditions.every(c => c)) {
+                const positions = this.findSupplyPositions({ agent, data, resources });
 
-        const { foodUsed: supply, foodCap } = agent;
+                // pick 10 random positions from the list
+                const randomPositions = positions
+                    .map(pos => ({ pos, rand: Math.random() }))
+                    .sort((a, b) => a.rand - b.rand)
+                    .map(a => a.pos)
+                    .slice(0, 20);
 
-        // current supplyCap includes pylons currently building and existing orders given to build them
-        const supplyCap = (
-            foodCap +
-            (units.inProgress(supplyUnitId).length * 8) + 
-            (units.withCurrentOrders(buildAbilityId).length * 8)
-        );
+                // see if any of them are good
+                const foundPosition = await actions.canPlace(supplyUnitId, randomPositions);
 
-        if (supplyCap >= 200) return;
-
-        const conditions = [
-            supplyCap - supply < calculateSupplyGap(gameLoop, supply, bases), // need more supply gap
-            agent.canAfford(supplyUnitId), // can afford to build a pylon
-            units.withCurrentOrders(buildAbilityId).length <= 0
-        ];
-
-        if (conditions.every(c => c)) {
-            const positions = this.findSupplyPositions({ agent, data, resources });
-
-            // pick 10 random positions from the list
-            const randomPositions = positions
-                .map(pos => ({ pos, rand: Math.random() }))
-                .sort((a, b) => a.rand - b.rand)
-                .map(a => a.pos)
-                .slice(0, 20);
-
-            // see if any of them are good
-            const foundPosition = await actions.canPlace(supplyUnitId, randomPositions);
-
-            if (foundPosition) {
-                const res = await actions.build(supplyUnitId, foundPosition);
+                if (foundPosition) {
+                    const res = await actions.build(supplyUnitId, foundPosition);
+                }
             }
         }
-    }
-});
+    });
+}
+
+module.exports = (opts) => {
+    const options = {
+        firstPylon: 'main',
+        ...opts,
+    };
+
+    return createSupplySystem(options);
+};
+
